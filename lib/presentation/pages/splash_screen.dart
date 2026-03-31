@@ -155,8 +155,9 @@ class _SplashScreenState extends State<SplashScreen>
                 child: Text(
                   'v${VersionConstants.fullVersion}',
                   style: TextStyle(
-                    color: Colors.white24,
-                    fontSize: 12,
+                    color: Colors.white70,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
                     letterSpacing: 1.2,
                   ),
                 ),

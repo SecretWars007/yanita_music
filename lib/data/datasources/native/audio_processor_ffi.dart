@@ -17,13 +17,13 @@ import 'package:yanita_music/core/utils/logger.dart';
 /// El uso de C++ garantiza el alto rendimiento y baja latencia
 /// requeridos para el procesamiento DSP en dispositivos móviles.
 
-// Typedefs para funciones nativas
 typedef ProcessAudioFileNative =
     Pointer<Float> Function(
       Pointer<Utf8> filePath,
       Pointer<Int32> outFrames,
       Pointer<Int32> outMelBins,
       Pointer<Double> outDuration,
+      Pointer<Float> outPianoConfidence,
     );
 typedef ProcessAudioFileDart =
     Pointer<Float> Function(
@@ -31,6 +31,7 @@ typedef ProcessAudioFileDart =
       Pointer<Int32> outFrames,
       Pointer<Int32> outMelBins,
       Pointer<Double> outDuration,
+      Pointer<Float> outPianoConfidence,
     );
 
 typedef FreeBufferNative = Void Function(Pointer<Float> buffer);
@@ -103,6 +104,7 @@ class AudioProcessorFFI {
     int numFrames,
     int numMelBins,
     double duration,
+    double pianoConfidence,
   })
   processFile(String filePath) {
     if (!_isInitialized) {
@@ -113,6 +115,7 @@ class AudioProcessorFFI {
     final outFrames = calloc<Int32>();
     final outMelBins = calloc<Int32>();
     final outDuration = calloc<Double>();
+    final outConfidence = calloc<Float>();
 
     try {
       final resultPtr = _processAudioFile(
@@ -120,6 +123,7 @@ class AudioProcessorFFI {
         outFrames,
         outMelBins,
         outDuration,
+        outConfidence,
       );
 
       if (resultPtr == nullptr) {
@@ -133,17 +137,15 @@ class AudioProcessorFFI {
       final numFrames = outFrames.value;
       final numMelBins = outMelBins.value;
       final duration = outDuration.value;
+      final confidence = outConfidence.value;
       
       AppLogger.info(
-        'Audio procesado (Flat Buffer): $numFrames frames, $numMelBins mel bins, '
-        '${duration.toStringAsFixed(2)}s',
+        'Audio procesado: $numFrames frames, $numMelBins mel bins, '
+        '${duration.toStringAsFixed(2)}s, Confianza Piano: ${confidence.toStringAsFixed(2)}',
         tag: _tag,
       );
 
       // [SENIOR OPTIMIZATION]: Evitar la penalización FFI y GC.
-      // Creamos un Float32List que COPIA los datos de una vez (congelamos el estado).
-      // .asTypedList(n) crea una vista, pero como vamos a liberar resultPtr, 
-      // necesitamos copiar los datos a Dart antes de llamar a _freeBuffer.
       final totalElements = numFrames * numMelBins;
       final spectrogram = Float32List.fromList(resultPtr.asTypedList(totalElements));
 
@@ -155,12 +157,14 @@ class AudioProcessorFFI {
         numFrames: numFrames,
         numMelBins: numMelBins,
         duration: duration,
+        pianoConfidence: confidence,
       );
     } finally {
       calloc.free(pathPtr);
       calloc.free(outFrames);
       calloc.free(outMelBins);
       calloc.free(outDuration);
+      calloc.free(outConfidence);
     }
   }
 }

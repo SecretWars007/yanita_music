@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:yanita_music/data/models/note_event_model.dart';
 import 'package:yanita_music/domain/entities/score.dart';
 
@@ -14,6 +15,9 @@ class ScoreModel extends Score {
     super.musicXml,
     super.checksum,
     super.spectrogramData,
+    super.wavPath,
+    super.pdfPath,
+    super.transcriptionSteps,
     required super.createdAt,
     required super.updatedAt,
   });
@@ -32,7 +36,12 @@ class ScoreModel extends Score {
       midiData: map['midi_data'] as String?,
       musicXml: map['music_xml'] as String?,
       checksum: map['checksum'] as String?,
-      spectrogramData: map['spectrogram_data'] as String?,
+      spectrogramData: map['spectrogram_data'] != null 
+          ? (map['spectrogram_data'] as Uint8List).buffer.asFloat32List() 
+          : null,
+      wavPath: map['wav_path'] as String?,
+      pdfPath: map['pdf_path'] as String?,
+      transcriptionSteps: map['transcription_steps'] as String?,
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
     );
@@ -53,7 +62,10 @@ class ScoreModel extends Score {
       'midi_data': midiData,
       'music_xml': musicXml,
       'checksum': checksum,
-      'spectrogram_data': spectrogramData,
+      'spectrogram_data': spectrogramData?.buffer.asUint8List(),
+      'wav_path': wavPath,
+      'pdf_path': pdfPath,
+      'transcription_steps': transcriptionSteps,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -71,6 +83,9 @@ class ScoreModel extends Score {
       musicXml: entity.musicXml,
       checksum: entity.checksum,
       spectrogramData: entity.spectrogramData,
+      wavPath: entity.wavPath,
+      pdfPath: entity.pdfPath,
+      transcriptionSteps: entity.transcriptionSteps,
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt,
     );

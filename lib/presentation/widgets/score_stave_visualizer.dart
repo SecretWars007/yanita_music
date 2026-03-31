@@ -8,7 +8,6 @@ class ScoreStaveVisualizer extends StatelessWidget {
   final Score score;
   final double currentTime;
   final bool isPlaying;
-  final bool showNoteNames;
   final double staffScale;
 
   const ScoreStaveVisualizer({
@@ -16,7 +15,6 @@ class ScoreStaveVisualizer extends StatelessWidget {
     required this.score,
     required this.currentTime,
     this.isPlaying = false,
-    this.showNoteNames = true,
     this.staffScale = 1.0,
   });
 
@@ -45,8 +43,8 @@ class ScoreStaveVisualizer extends StatelessWidget {
             noteEvents: score.noteEvents,
             currentTime: currentTime,
             accentColor: Theme.of(context).colorScheme.primary,
-            showNoteNames: showNoteNames,
             staffScale: staffScale,
+            tempo: score.tempo ?? 120.0,
           ),
 
           size: Size.infinite,
@@ -60,14 +58,14 @@ class _StavePainter extends CustomPainter {
   final List<NoteEvent> noteEvents;
   final double currentTime;
   final Color accentColor;
-  final bool showNoteNames;
   final double staffScale;
+  final double tempo;
 
   _StavePainter({
     required this.noteEvents,
     required this.currentTime,
     required this.accentColor,
-    this.showNoteNames = true,
+    required this.tempo,
     this.staffScale = 1.0,
   });
 
@@ -85,9 +83,11 @@ class _StavePainter extends CustomPainter {
 
 
     // Constantes de diseño para sincronización horizontal
-    const double timeWindow = 6.0;
-    final double pixelsPerSecond = (size.width - 100) / timeWindow;
-    final double playheadX = size.width * 0.3;
+    // [SENIOR ADJUST]: Reducimos timeWindow de 4.0 a 3.0 para dar MÁXIMO espacio 
+    // horizontal a las notas (Zoom x2 respecto al original).
+    const double timeWindow = 3.0;
+    final double pixelsPerSecond = (size.width - 60) / timeWindow;
+    final double playheadX = size.width * 0.2; // Playhead más a la izquierda para ver más futuro
 
     // 1. Dibujar clave de sol usando TextPainter (ANCLADA AL TIEMPO 0)
     final TextPainter clefPainter = TextPainter(
@@ -139,32 +139,55 @@ class _StavePainter extends CustomPainter {
 
       if (x < -50 || x > size.width + 50) continue;
 
-      // Mapeo MIDI a Posición Y
+      // Mapeo MIDI a Posición Y (y detección de accidental)
       final int midi = note.midiNote;
       final int octave = (midi ~/ 12) - 1;
       final int noteInOctave = midi % 12;
       
+      bool isSharp = false;
       int step = octave * 7;
-      if (noteInOctave <= 1) {
-        step += 0; // C
-      } else if (noteInOctave <= 3) {
-        step += 1; // D
-      } else if (noteInOctave <= 4) {
-        step += 2; // E
-      } else if (noteInOctave <= 6) {
-        step += 3; // F
-      } else if (noteInOctave <= 8) {
-        step += 4; // G
-      } else if (noteInOctave <= 10) {
-        step += 5; // A
-      } else {
-        step += 6; // B
+      
+      // Mapeo exacto de los 12 semitonos a grados del pentagrama
+      switch (noteInOctave) {
+        case 0: step += 0; break; // C
+        case 1: step += 0; isSharp = true; break; // C#
+        case 2: step += 1; break; // D
+        case 3: step += 1; isSharp = true; break; // D#
+        case 4: step += 2; break; // E
+        case 5: step += 3; break; // F
+        case 6: step += 3; isSharp = true; break; // F#
+        case 7: step += 4; break; // G
+        case 8: step += 4; isSharp = true; break; // G#
+        case 9: step += 5; break; // A
+        case 10: step += 5; isSharp = true; break; // A#
+        case 11: step += 6; break; // B
       }
 
       // Ref: E4 (64) es el paso 30. Línea inferior = startY + 4 * lineSpacing
       final double y = (startY + 4 * lineSpacing) - (step - 30) * (lineSpacing / 2);
 
       final bool isActive = currentTime >= note.startTime && currentTime <= note.endTime;
+      final bool isPast = currentTime > note.endTime;
+      final Color noteColor = isActive 
+          ? accentColor 
+          : (isPast ? Colors.black.withValues(alpha: 0.3) : Colors.black.withValues(alpha: 0.9));
+
+      // Dibujar Sostenido (#) si aplica
+      if (isSharp) {
+        final TextPainter sharpPainter = TextPainter(
+          text: TextSpan(
+            text: '♯',
+            style: TextStyle(
+              fontSize: lineSpacing * 1.8,
+              color: noteColor,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        sharpPainter.layout();
+        sharpPainter.paint(canvas, Offset(x - 32, y - lineSpacing * 0.9));
+      }
 
       // Dibujar líneas adicionales (Ledger Lines)
       final Paint ledgerPaint = Paint()
@@ -184,17 +207,23 @@ class _StavePainter extends CustomPainter {
         }
       }
 
-      final Color noteColor = isActive ? accentColor : Colors.black.withValues(alpha: 0.9);
+      final double duration = note.endTime - note.startTime;
+      final double durationInBeats = (duration * tempo) / 60.0;
+
+      // Determinar el tipo de nota (musical figure)
+      final bool isWhole = durationInBeats >= 3.5; // Redonda
+      final bool isHalf = !isWhole && durationInBeats >= 1.5; // Blanca
+      final bool isQuarter = !isWhole && !isHalf; // Negra
+
       final Paint notePaint = Paint()
         ..color = noteColor
-        ..strokeWidth = 2.5 // Borde grueso como en la imagen
-        ..style = PaintingStyle.stroke; // Estilo "hollow" (hueco)
+        ..strokeWidth = 2.5
+        ..style = isQuarter ? PaintingStyle.fill : PaintingStyle.stroke;
 
-      // Notas con proporciones de la imagen (más ovaladas)
-      // Notas con proporciones de la imagen (más ovaladas), afectadas por staffScale
-      final double radiusX = 11.0 * staffScale;
-      final double radiusY = 8.5 * staffScale;
-
+      // El alto de la nota debe encajar exactamente entre las líneas del pentagrama.
+      // radio vertical = lineSpacing / 2
+      final double radiusY = (lineSpacing / 2) * 0.92; 
+      final double radiusX = isWhole ? radiusY * 1.5 : radiusY * 1.35;
 
       canvas.save();
       canvas.translate(x, y);
@@ -209,8 +238,8 @@ class _StavePainter extends CustomPainter {
         notePaint,
       );
 
-      if (isActive) {
-        // Relleno sutil para nota activa sin perder el estilo hollow
+      if (isActive && !isQuarter) {
+        // Relleno sutil para nota activa hueca
         final Paint activeFill = Paint()
           ..color = accentColor.withValues(alpha: 0.15)
           ..style = PaintingStyle.fill;
@@ -225,44 +254,30 @@ class _StavePainter extends CustomPainter {
       }
       canvas.restore();
 
-      // 5. Dibujar nombre de la nota (Do, Re, Mi...) debajo SI está habilitado
-      if (showNoteNames) {
-        final String noteName = _getNoteName(noteInOctave);
-        final TextPainter namePainter = TextPainter(
-          text: TextSpan(
-            text: noteName,
-            style: TextStyle(
-              color: noteColor.withValues(alpha: 0.8),
-              fontSize: 13 * staffScale,
-              fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-            ),
+      // Dibujar PLICA (Stem) - Las redondas NO tienen plica
+      if (!isWhole) {
+        final bool stemUp = step < 34; // Plica hacia arriba para notas bajas (debajo de la 3ra línea)
+        final double stemHeight = lineSpacing * 3.2; // Altura estándar de la plica
+        // El stem de la plica va desde el lado derecho si es hacia arriba, y desde el izquierdo si es hacia abajo
+        final double stemX = stemUp ? x + radiusX * 0.9 : x - radiusX * 0.9;
+        final double stemStartY = stemUp ? y : y;
+        final double stemEndY = stemUp ? y - stemHeight : y + stemHeight;
 
-          ),
-          textDirection: TextDirection.ltr,
+        canvas.drawLine(
+          Offset(stemX, stemStartY),
+          Offset(stemX, stemEndY),
+          Paint()
+            ..color = noteColor
+            ..strokeWidth = 1.5,
         );
-        namePainter.layout();
-        namePainter.paint(canvas, Offset(x - namePainter.width / 2, startY + staveHeight + 8));
       }
-
-      final bool stemUp = step < 34;
-      final double stemHeight = lineSpacing * 3.5;
-      final double stemX = stemUp ? x + radiusX * 0.8 : x - radiusX * 0.8;
-      final double stemEndY = stemUp ? y - stemHeight : y + stemHeight;
-
-      canvas.drawLine(
-        Offset(stemX, y),
-        Offset(stemX, stemEndY),
-        Paint()
-          ..color = noteColor
-          ..strokeWidth = 2.0,
-      );
     }
     
     // (Resto del código del playhead...)
     // 4. Dibujar línea de tiempo (Playhead) - Más visible y elegante
     final Paint playheadPaint = Paint()
       ..color = accentColor.withValues(alpha: 0.8)
-      ..strokeWidth = 3.0;
+      ..strokeWidth = 2.5;
     
     // Línea principal
     canvas.drawLine(
@@ -298,30 +313,10 @@ class _StavePainter extends CustomPainter {
     return low;
   }
 
-  /// Retorna el nombre de la nota en solfeo según el índice (0-11).
-  String _getNoteName(int noteInOctave) {
-    switch (noteInOctave) {
-      case 0: return 'Do';
-      case 1: return 'Do#';
-      case 2: return 'Re';
-      case 3: return 'Re#';
-      case 4: return 'Mi';
-      case 5: return 'Fa';
-      case 6: return 'Fa#';
-      case 7: return 'Sol';
-      case 8: return 'Sol#';
-      case 9: return 'La';
-      case 10: return 'La#';
-      case 11: return 'Si';
-      default: return '';
-    }
-  }
-
   @override
   bool shouldRepaint(covariant _StavePainter oldDelegate) {
     return oldDelegate.currentTime != currentTime ||
         oldDelegate.noteEvents != noteEvents ||
-        oldDelegate.showNoteNames != showNoteNames ||
         oldDelegate.staffScale != staffScale;
 
   }

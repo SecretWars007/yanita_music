@@ -1,4 +1,7 @@
 import 'dart:isolate';
+import 'dart:io';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:dartz/dartz.dart';
 import 'package:yanita_music/core/error/exceptions.dart';
 import 'package:yanita_music/core/error/failures.dart';
@@ -38,11 +41,23 @@ class AudioRepositoryImpl with StatusStreamMixin implements AudioRepository {
       final checksum = await _fileValidator.validateAudioFile(filePath);
       AppLogger.debug('Archivo validado. Checksum: $checksum', tag: _tag);
 
-      // 2. Convertir a WAV (16kHz, mono) usando FFmpeg
-      // Esto asegura compatibilidad total con el procesador nativo.
+      // 2. Crear copia local segura en el sandbox (Evita errores de permisos/URIs en Android)
+      sendStatus('Preparando copia local de audio...');
+      final tempDir = await getTemporaryDirectory();
+      final localInputPath = p.join(tempDir.path, 'input_${DateTime.now().millisecondsSinceEpoch}_${p.basename(filePath)}');
+      await File(filePath).copy(localInputPath);
+      AppLogger.debug('Copia local creada: $localInputPath', tag: _tag);
+
+      // 3. Convertir a WAV (16kHz, mono) usando FFmpeg
       sendStatus('Convirtiendo audio a WAV profesional (FFmpeg)...');
-      final wavPath = await _audioConverter.convertToWav(filePath);
-      AppLogger.debug('Conversión FFmpeg exitosa: $wavPath', tag: _tag);
+      String wavPath;
+      try {
+        wavPath = await _audioConverter.convertToWav(localInputPath);
+        AppLogger.debug('Conversión FFmpeg exitosa: $wavPath', tag: _tag);
+      } finally {
+        // Eliminar la copia del input original una vez convertido
+        _audioConverter.cleanTempFile(localInputPath);
+      }
 
       try {
         // 3. Procesar WAV con módulo C++ FFI
@@ -54,7 +69,18 @@ class AudioRepositoryImpl with StatusStreamMixin implements AudioRepository {
           return processor.processFile(wavPath);
         });
         
-        AppLogger.info('Procesamiento C++ FFI completado: ${result.duration.toStringAsFixed(1)}s', tag: _tag);
+        // [v53-FIX]: Validación de contenido de audio (Solo Piano Solista)
+        if (result.pianoConfidence < 0.3) {
+          AppLogger.warning(
+            'Audio rechazado por baja confianza de piano: ${result.pianoConfidence.toStringAsFixed(2)}',
+            tag: _tag,
+          );
+          throw const AudioProcessingException(
+            message: 'No se puede procesar este archivo. Solo se permite música de piano solo.',
+          );
+        }
+
+        AppLogger.info('Procesamiento C++ FFI completado: ${result.duration.toStringAsFixed(1)}s (Confianza: ${result.pianoConfidence.toStringAsFixed(2)})', tag: _tag);
 
         // 4. Convertir record nativo a entidad de dominio
         final features = AudioFeatures(
@@ -64,13 +90,16 @@ class AudioRepositoryImpl with StatusStreamMixin implements AudioRepository {
           audioDuration: result.duration,
           sampleRate: 16000,
           sourceChecksum: checksum,
+          wavPath: wavPath, // Retornamos la ruta del WAV persistido
         );
 
         return Right(features);
-      } finally {
-        // Limpiar archivo temporal generado por FFmpeg
+      } catch (e) {
+        // Si hay error en el procesamiento nativo, sí limpiamos el WAV temporal
         _audioConverter.cleanTempFile(wavPath);
+        rethrow;
       }
+
 
     } on FileValidationException catch (e, stackTrace) {
       AppLogger.error('Fallo en validación de archivo: ${e.message}', tag: _tag, error: e, stackTrace: stackTrace);

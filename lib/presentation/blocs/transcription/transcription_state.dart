@@ -64,6 +64,7 @@ final class Transcribing extends TranscriptionState {
 /// Transcripción completada exitosamente.
 final class TranscriptionSuccess extends TranscriptionState {
   final String filePath;
+  final String? pdfPath;
   final int noteCount;
   final double duration;
   final bool isPolyphonic;
@@ -71,6 +72,7 @@ final class TranscriptionSuccess extends TranscriptionState {
 
   const TranscriptionSuccess({
     required this.filePath,
+    this.pdfPath,
     required this.noteCount,
     required this.duration,
     required this.isPolyphonic,
@@ -78,9 +80,8 @@ final class TranscriptionSuccess extends TranscriptionState {
   });
 
   @override
-  List<Object?> get props => [filePath, noteCount, duration];
+  List<Object?> get props => [filePath, pdfPath, noteCount, duration];
 }
-
 /// Guardando la partitura en la base de datos de forma automática.
 final class SavingTranscription extends TranscriptionState {
   final String title;
@@ -109,14 +110,16 @@ final class TranscriptionSaved extends TranscriptionState {
 final class TranscriptionError extends TranscriptionState {
   final String message;
   final String? lastFilePath;
+  final String? pdfPath;
   final List<TranscriptionStep>? steps;
 
   const TranscriptionError({
     required this.message,
     this.lastFilePath,
+    this.pdfPath,
     this.steps,
   });
 
   @override
-  List<Object?> get props => [message, lastFilePath, steps];
+  List<Object?> get props => [message, lastFilePath, pdfPath, steps];
 }

@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:yanita_music/domain/entities/note_event.dart';
+import 'dart:typed_data';
 
 /// Entidad que representa una partitura musical completa.
 ///
@@ -15,7 +16,10 @@ class Score extends Equatable {
   final String? midiData;
   final String? musicXml;
   final String? checksum;
-  final String? spectrogramData;
+  final Float32List? spectrogramData;
+  final String? wavPath;
+  final String? pdfPath;
+  final String? transcriptionSteps;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -30,6 +34,9 @@ class Score extends Equatable {
     this.musicXml,
     this.checksum,
     this.spectrogramData,
+    this.wavPath,
+    this.pdfPath,
+    this.transcriptionSteps,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -60,7 +67,10 @@ class Score extends Equatable {
     String? midiData,
     String? musicXml,
     String? checksum,
-    String? spectrogramData,
+    Float32List? spectrogramData,
+    String? wavPath,
+    String? pdfPath,
+    String? transcriptionSteps,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -75,11 +85,23 @@ class Score extends Equatable {
       musicXml: musicXml ?? this.musicXml,
       checksum: checksum ?? this.checksum,
       spectrogramData: spectrogramData ?? this.spectrogramData,
+      wavPath: wavPath ?? this.wavPath,
+      pdfPath: pdfPath ?? this.pdfPath,
+      transcriptionSteps: transcriptionSteps ?? this.transcriptionSteps,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 
   @override
-  List<Object?> get props => [id, title, audioPath, noteCount, duration];
+  List<Object?> get props => [
+        id,
+        title,
+        audioPath,
+        noteCount,
+        duration,
+        wavPath,
+        pdfPath,
+        transcriptionSteps,
+      ];
 }

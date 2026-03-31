@@ -1,9 +1,17 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:yanita_music/domain/entities/score.dart';
 import 'package:yanita_music/presentation/widgets/score_stave_visualizer.dart';
+import 'package:yanita_music/core/utils/logger.dart';
+import 'package:yanita_music/core/constants/db_constants.dart';
+import 'package:yanita_music/data/datasources/local/database_helper.dart';
+
+
+
 
 /// Página de detalle de una partitura transcrita con controles de reproducción.
 class ScoreDetailPage extends StatefulWidget {
@@ -17,38 +25,37 @@ class ScoreDetailPage extends StatefulWidget {
 
 class _ScoreDetailPageState extends State<ScoreDetailPage> with SingleTickerProviderStateMixin {
   late AudioPlayer _audioPlayer;
-  late Ticker _ticker;
+  late Ticker _ticker160fps;
   bool _isPlaying = false;
   bool _isLoading = false;
-  bool _showNoteNames = true;
   double _currentTime = 0.0;
   double _staffScale = 1.0;
-  int _fpsLimit = 30;
-  Duration _lastFrameTime = Duration.zero;
+
+  // Throttle a 160 FPS: intervalo mínimo entre frames (~6.25 ms)
+  static const int _frameIntervalMs = 1000 ~/ 160;
+  int _lastFrameMs = 0;
 
 
   @override
   void initState() {
     super.initState();
     _audioPlayer = AudioPlayer();
-    _initAudio();
-    
-    // Ticker para actualización del pentagrama con control de FPS
-    _ticker = createTicker((elapsed) {
-      if (_isPlaying) {
-        final frameInterval = Duration(milliseconds: (1000 / _fpsLimit).round());
-        if (elapsed - _lastFrameTime >= frameInterval) {
-          _lastFrameTime = elapsed;
-          final position = _audioPlayer.position.inMilliseconds / 1000.0;
-          if (mounted && position != _currentTime) {
-            setState(() {
-              _currentTime = position;
-            });
-          }
+
+    // Ticker a 160 FPS: lee la posición real del audio en cada frame
+    _ticker160fps = createTicker((_) {
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      if (nowMs - _lastFrameMs < _frameIntervalMs) return;
+      _lastFrameMs = nowMs;
+      if (_isPlaying && mounted) {
+        final pos = _audioPlayer.position.inMilliseconds / 1000.0;
+        if (pos != _currentTime) {
+          setState(() => _currentTime = pos);
         }
       }
     });
+    _ticker160fps.start();
 
+    _initAudio();
   }
 
   Future<void> _initAudio() async {
@@ -56,36 +63,91 @@ class _ScoreDetailPageState extends State<ScoreDetailPage> with SingleTickerProv
 
     setState(() => _isLoading = true);
     try {
+      // Configurar sesión de audio para Android
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
+
+      AppLogger.info('Inicializando audio: ${widget.score.audioPath}', tag: 'ScoreDetailPage');
+
+      
+      // Verificar que el archivo realmente existe
+      bool fileExists = false;
+      if (widget.score.audioPath.startsWith('assets/')) {
+        // Para assets no podemos usar File().existsSync() directamente,
+        // pero confiamos en que si está en la semilla está en pubspec.
+        fileExists = true;
+      } else if (widget.score.audioPath.startsWith('http')) {
+        fileExists = true;
+      } else {
+        fileExists = File(widget.score.audioPath).existsSync();
+      }
+
+      if (!fileExists) {
+        throw Exception('El archivo de audio no existe: ${widget.score.audioPath}');
+      }
+
       if (widget.score.audioPath.startsWith('http')) {
         await _audioPlayer.setUrl(widget.score.audioPath);
       } else if (widget.score.audioPath.startsWith('assets/')) {
+        // En Android/Release, setAsset es el método correcto para archivos en assets/
         await _audioPlayer.setAsset(widget.score.audioPath);
       } else {
         await _audioPlayer.setFilePath(widget.score.audioPath);
       }
 
       _audioPlayer.playerStateStream.listen((state) {
-        if (mounted) {
-          setState(() {
-            _isPlaying = state.playing;
-            if (_isPlaying) {
-              _ticker.start();
-            } else {
-              _ticker.stop();
-            }
-            
-            if (state.processingState == ProcessingState.completed) {
-              _isPlaying = false;
-              _ticker.stop();
-              _audioPlayer.seek(Duration.zero);
-              _audioPlayer.pause();
-              setState(() => _currentTime = 0.0);
-            }
-          });
+        if (!mounted) return;
+        setState(() {
+          _isPlaying = state.playing;
+          if (state.processingState == ProcessingState.completed) {
+            _isPlaying = false;
+            _audioPlayer.seek(Duration.zero);
+            _audioPlayer.pause();
+            setState(() => _currentTime = 0.0);
+          }
+        });
+      });
+      // positionStream: solo para seek externo (p.ej. drag del slider)
+      _audioPlayer.positionStream.listen((position) {
+        if (mounted && !_isPlaying) {
+          setState(() => _currentTime = position.inMilliseconds / 1000.0);
         }
       });
-    } catch (e) {
-      debugPrint('Error inicializando audio: $e');
+      
+      // Pre-cargar para obtener duración real si es posible
+      final duration = await _audioPlayer.load();
+      if (duration != null) {
+        AppLogger.info('Audio cargado. Duración: ${duration.inSeconds}s', tag: 'ScoreDetailPage');
+      }
+
+    } catch (e, stack) {
+      AppLogger.error('Error inicializando audio', tag: 'ScoreDetailPage', error: e, stackTrace: stack);
+      if (mounted) {
+        String errorMsg = e.toString().split('\n').first;
+        if (errorMsg.contains('Exception:')) {
+          errorMsg = errorMsg.replaceAll('Exception:', '').trim();
+        }
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(child: Text('Error de audio: $errorMsg')),
+              ],
+            ),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'REINTENTAR',
+              textColor: Colors.white,
+              onPressed: _initAudio,
+            ),
+          ),
+        );
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -93,12 +155,51 @@ class _ScoreDetailPageState extends State<ScoreDetailPage> with SingleTickerProv
 
   @override
   void dispose() {
-    _ticker.dispose();
+    _ticker160fps.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }
 
+
+  void _showDiagnostics() async {
+    final logs = await DatabaseHelper().getLogs(limit: 50);
+    if (!mounted) return;
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Logs de Sistema'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: logs.isEmpty 
+            ? const Center(child: Text('No hay logs registrados.'))
+            : ListView.builder(
+                itemCount: logs.length,
+                itemBuilder: (context, i) {
+                  final log = logs[i];
+                  final level = log[DbConstants.colLogLevel] ?? 'INFO';
+                  final color = level == 'error' ? Colors.red : (level == 'warning' ? Colors.orange : Colors.blue);
+                  
+                  return ListTile(
+                    leading: Icon(Icons.circle, color: color, size: 12),
+                    title: Text(log[DbConstants.colLogMessage] ?? '', style: const TextStyle(fontSize: 13)),
+                    subtitle: Text('${log[DbConstants.colLogTag]} | ${log[DbConstants.colLogCreatedAt]}', 
+                      style: const TextStyle(fontSize: 11)),
+                    isThreeLine: false,
+                  );
+                },
+              ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar')),
+        ],
+      ),
+    );
+  }
+
   void _togglePlayback() {
+
     if (_isPlaying) {
       _audioPlayer.pause();
     } else {
@@ -113,13 +214,11 @@ class _ScoreDetailPageState extends State<ScoreDetailPage> with SingleTickerProv
         title: Text(widget.score.title, style: GoogleFonts.inter(fontSize: 18)),
         actions: [
           IconButton(
-            icon: Icon(
-              _showNoteNames ? Icons.label : Icons.label_off_outlined,
-              color: _showNoteNames ? Theme.of(context).colorScheme.primary : null,
-            ),
-            tooltip: 'Mostrar nombres de notas',
-            onPressed: () => setState(() => _showNoteNames = !_showNoteNames),
+            icon: const Icon(Icons.bug_report_outlined),
+            tooltip: 'Ver Logs de Sistema',
+            onPressed: _showDiagnostics,
           ),
+
           IconButton(icon: const Icon(Icons.share_outlined), onPressed: () {}),
         ],
       ),
@@ -133,7 +232,6 @@ class _ScoreDetailPageState extends State<ScoreDetailPage> with SingleTickerProv
               score: widget.score,
               currentTime: _currentTime,
               isPlaying: _isPlaying,
-              showNoteNames: _showNoteNames,
               staffScale: _staffScale,
             ),
 
@@ -234,34 +332,18 @@ class _ScoreDetailPageState extends State<ScoreDetailPage> with SingleTickerProv
                 ),
               ),
             ),
-            // Controles de Visualización (Zoom y FPS)
+            // Control de Zoom del Pentagrama
             Card(
-
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    _buildSlider(
-                      label: 'Tamaño del Pentagrama',
-                      icon: Icons.zoom_in,
-                      value: _staffScale,
-                      min: 0.5,
-                      max: 2.0,
-                      onChanged: (val) => setState(() => _staffScale = val),
-                      secondaryLabel: '${(_staffScale * 100).toInt()}%',
-                    ),
-                    const Divider(height: 1),
-                    _buildSlider(
-                      label: 'Límite de FPS',
-                      icon: Icons.speed,
-                      value: _fpsLimit.toDouble(),
-                      min: 10,
-                      max: 60,
-                      onChanged: (val) => setState(() => _fpsLimit = val.toInt()),
-                      secondaryLabel: '$_fpsLimit FPS',
-
-                    ),
-                  ],
+                child: _buildSlider(
+                  label: 'Tamaño del Pentagrama',
+                  icon: Icons.zoom_in,
+                  value: _staffScale,
+                  min: 0.5,
+                  max: 2.0,
+                  onChanged: (val) => setState(() => _staffScale = val),
+                  secondaryLabel: '${(_staffScale * 100).toInt()}%',
                 ),
               ),
             ),

@@ -27,6 +27,15 @@ class TranscriptionStep extends Equatable {
     );
   }
 
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'title': title,
+      'status': status.name,
+      'message': message,
+    };
+  }
+
   @override
   List<Object?> get props => [id, title, status, message];
 }

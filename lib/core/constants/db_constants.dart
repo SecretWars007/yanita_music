@@ -19,6 +19,9 @@ class DbConstants {
   static const String colUpdatedAt = 'updated_at';
   static const String colChecksum = 'checksum';
   static const String colSpectrogramData = 'spectrogram_data';
+  static const String colWavPath = 'wav_path';
+  static const String colPdfPath = 'pdf_path';
+  static const String colTranscriptionSteps = 'transcription_steps';
 
   // Tabla del cancionero (songbook)
   static const String songsTable = 'songs'; // Nueva tabla para demos y gestión simplificada

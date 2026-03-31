@@ -23,6 +23,7 @@ float mel_to_hz(float mel);
 std::vector<float> resample(const int16_t* samples, int num_samples, int original_sr, int num_channels);
 std::vector<float> hann_window(int size);
 void fft_inplace(float* real, float* imag, int n);
+float calculate_spectral_flatness(const float* power_spec, int spec_size);
 
 struct MelFilter {
     int start_bin;

@@ -1,4 +1,7 @@
+import 'dart:io';
+import 'package:yanita_music/core/constants/app_constants.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:yanita_music/domain/entities/score.dart';
@@ -10,7 +13,10 @@ import 'package:yanita_music/presentation/pages/songbook_page.dart';
 import 'package:yanita_music/presentation/pages/login_page.dart';
 import 'package:yanita_music/presentation/widgets/score_stave_visualizer.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:yanita_music/core/constants/version_constants.dart';
+import 'package:audio_session/audio_session.dart';
+import 'package:yanita_music/core/utils/logger.dart';
+import 'package:yanita_music/presentation/pages/log_viewer_page.dart';
+import 'package:yanita_music/presentation/pages/database_viewer_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -36,8 +42,8 @@ class _HomePageState extends State<HomePage> {
       body: IndexedStack(index: _currentIndex, children: _pages),
       bottomNavigationBar: BottomNavigationBar(
         backgroundColor: const Color(0xFF121212),
-        selectedItemColor: const Color(0xFFFF9800), // Naranja 500
-        unselectedItemColor: const Color(0xFF666666), // Gris neutro
+        selectedItemColor: const Color(0xFFFF9800),
+        unselectedItemColor: const Color(0xFF666666),
         currentIndex: _currentIndex,
         onTap: (index) {
           setState(() {
@@ -77,8 +83,12 @@ class _DashboardViewState extends State<_DashboardView>
   Score? _selectedScore;
   bool _isPlaying = false;
   bool _isAudioLoading = false;
+  double _currentTime = 0.0;
+  double _lastReportedPos = 0.0;
+  DateTime _lastReportedTime = DateTime.now();
   late AnimationController _playbackController;
   late AudioPlayer _audioPlayer;
+  late Ticker _ticker160fps;
 
   @override
   void initState() {
@@ -90,16 +100,51 @@ class _DashboardViewState extends State<_DashboardView>
           });
 
     _audioPlayer = AudioPlayer();
+
     _audioPlayer.positionStream.listen((position) {
-      if (_selectedScore != null && _selectedScore!.duration > 0) {
+      if (_selectedScore != null && _selectedScore!.duration > 0 && mounted) {
         final double progress =
             position.inMilliseconds / (_selectedScore!.duration * 1000);
-        // Sincronización directa y forzada
-        if (mounted) {
+        if (!_isPlaying) {
+          setState(() {
+            _playbackController.value = progress.clamp(0.0, 1.0);
+            _currentTime = position.inMilliseconds / 1000.0;
+          });
+        } else {
           _playbackController.value = progress.clamp(0.0, 1.0);
         }
       }
     });
+
+    _ticker160fps = createTicker((_) {
+      final now = DateTime.now();
+      if (_isPlaying && _selectedScore != null && mounted) {
+        final double platformPos =
+            _audioPlayer.position.inMilliseconds / 1000.0;
+
+        if (platformPos != _lastReportedPos) {
+          _lastReportedPos = platformPos;
+          _lastReportedTime = now;
+        }
+
+        final double elapsedSinceReport =
+            now.difference(_lastReportedTime).inMilliseconds / 1000.0;
+        final double interpolatedPos = _lastReportedPos + elapsedSinceReport;
+
+        if ((interpolatedPos - _currentTime).abs() > 0.005) {
+          setState(() {
+            _currentTime = interpolatedPos;
+          });
+        }
+      } else if (!_isPlaying && _selectedScore != null && mounted) {
+        final double platformPos =
+            _audioPlayer.position.inMilliseconds / 1000.0;
+        if (platformPos != _currentTime) {
+          setState(() => _currentTime = platformPos);
+        }
+      }
+    });
+    _ticker160fps.start();
 
     _audioPlayer.playerStateStream.listen((state) {
       if (state.processingState == ProcessingState.completed) {
@@ -107,17 +152,19 @@ class _DashboardViewState extends State<_DashboardView>
           _isPlaying = false;
           _playbackController.stop();
           _playbackController.value = 1.0;
+          _audioPlayer.seek(Duration.zero);
+          _audioPlayer.pause();
         });
       }
     });
 
-    // Cargar partituras al iniciar
     context.read<ScoreLibraryBloc>().add(LoadScores());
   }
 
   @override
   void dispose() {
     _playbackController.dispose();
+    _ticker160fps.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }
@@ -130,14 +177,36 @@ class _DashboardViewState extends State<_DashboardView>
     });
 
     try {
-      if (score.audioPath.isNotEmpty) {
-        if (score.audioPath.startsWith('http')) {
-          await _audioPlayer.setUrl(score.audioPath);
-        } else if (score.audioPath.startsWith('assets/')) {
-          await _audioPlayer.setAsset(score.audioPath);
-        } else {
-          await _audioPlayer.setFilePath(score.audioPath);
+      String audioPathToLoad = score.audioPath;
+      if (score.wavPath != null && score.wavPath!.isNotEmpty) {
+        final wavFile = File(score.wavPath!);
+        if (wavFile.existsSync()) {
+          audioPathToLoad = score.wavPath!;
+          AppLogger.info(
+            'Cargando WAV interno: $audioPathToLoad',
+            tag: 'HomePage',
+          );
         }
+      }
+
+      if (audioPathToLoad.isNotEmpty) {
+        final session = await AudioSession.instance;
+        await session.configure(const AudioSessionConfiguration.music());
+
+        if (audioPathToLoad.startsWith('http')) {
+          await _audioPlayer.setUrl(audioPathToLoad);
+        } else if (audioPathToLoad.startsWith('assets/')) {
+          try {
+            await _audioPlayer.setAsset(audioPathToLoad);
+          } catch (e) {
+            await _audioPlayer.setAudioSource(
+              AudioSource.uri(Uri.parse('asset:///$audioPathToLoad')),
+            );
+          }
+        } else {
+          await _audioPlayer.setFilePath(audioPathToLoad);
+        }
+        await _audioPlayer.load();
       }
 
       if (mounted) {
@@ -146,24 +215,18 @@ class _DashboardViewState extends State<_DashboardView>
           _playbackController.duration = Duration(
             milliseconds: (score.duration * 1000).toInt(),
           );
+          _currentTime = 0.0;
           _isPlaying = true;
         });
-
-        // Auto-reproducir la partitura al cargar en inicio
-        // Nota: NO llamamos a _playbackController.forward()
-        // El progreso lo dicta el positionStream del reproductor.
         _audioPlayer.play();
       }
     } catch (e) {
-      debugPrint('Error loading audio: $e');
+      AppLogger.error('Error loading audio: $e', tag: 'HomePage');
       if (mounted) {
         setState(() {
           _isAudioLoading = false;
           _isPlaying = false;
         });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error cargando audio: $e')));
       }
     }
   }
@@ -188,10 +251,11 @@ class _DashboardViewState extends State<_DashboardView>
   void _stopPlayback() {
     setState(() {
       _isPlaying = false;
-      _audioPlayer.stop();
+      _audioPlayer.pause();
       _audioPlayer.seek(Duration.zero);
-      _playbackController.reset();
       _playbackController.stop();
+      _playbackController.value = 0.0;
+      _currentTime = 0.0;
     });
   }
 
@@ -236,6 +300,22 @@ class _DashboardViewState extends State<_DashboardView>
           centerTitle: true,
           actions: [
             IconButton(
+              icon: const Icon(Icons.storage, color: Colors.blueAccent),
+              tooltip: 'Monitor de Datos',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DatabaseViewerPage()),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.bug_report, color: Colors.redAccent),
+              tooltip: 'Visor de Logs',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const LogViewerPage()),
+              ),
+            ),
+            IconButton(
               icon: const Icon(Icons.exit_to_app, color: Color(0xFFFF9800)),
               onPressed: () {
                 Navigator.of(context).pushReplacement(
@@ -254,15 +334,11 @@ class _DashboardViewState extends State<_DashboardView>
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SizedBox(height: 20),
-
-                // Área Principal: Partitura o Logo
                 Center(
                   child: _selectedScore != null
                       ? ScoreStaveVisualizer(
                           score: _selectedScore!,
-                          currentTime:
-                              _playbackController.value *
-                              (_selectedScore?.duration ?? 1.0),
+                          currentTime: _currentTime,
                           isPlaying: _isPlaying,
                         )
                       : Container(
@@ -274,20 +350,10 @@ class _DashboardViewState extends State<_DashboardView>
                               image: AssetImage('assets/images/logo.png'),
                               fit: BoxFit.cover,
                             ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.5),
-                                blurRadius: 20,
-                                offset: const Offset(0, 10),
-                              ),
-                            ],
                           ),
                         ),
                 ),
-
                 const SizedBox(height: 32),
-
-                // Información de la Partitura Seleccionada
                 if (_selectedScore != null) ...[
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -323,28 +389,25 @@ class _DashboardViewState extends State<_DashboardView>
                     ],
                   ),
                   const SizedBox(height: 24),
-                  // Barra de Progreso
                   Column(
                     children: [
                       SliderTheme(
                         data: SliderTheme.of(context).copyWith(
-                          trackHeight: 4,
+                          trackHeight: 2,
                           thumbShape: const RoundSliderThumbShape(
                             enabledThumbRadius: 6,
                           ),
-                          overlayShape: const RoundSliderOverlayShape(
-                            overlayRadius: 12,
-                          ),
                           activeTrackColor: const Color(0xFFFF9800),
-                          inactiveTrackColor: Colors.white10,
+                          inactiveTrackColor: Colors.white24,
                           thumbColor: Colors.white,
                         ),
                         child: Slider(
-                          value: _playbackController.value,
+                          value: _playbackController.value.clamp(0.0, 1.0),
                           onChanged: (value) {
-                            setState(() {
-                              _playbackController.value = value;
-                            });
+                            final seekMs =
+                                (value * (_selectedScore?.duration ?? 0) * 1000)
+                                    .toInt();
+                            _audioPlayer.seek(Duration(milliseconds: seekMs));
                           },
                         ),
                       ),
@@ -353,14 +416,22 @@ class _DashboardViewState extends State<_DashboardView>
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              _formatTime(
-                                _playbackController.value *
-                                    (_selectedScore?.duration ?? 0),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
                               ),
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 12,
+                              decoration: BoxDecoration(
+                                color: Colors.blueAccent,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text(
+                                'BUILD v${AppConstants.appVersion}+${AppConstants.buildNumber} - MODO TELEMETRÍA',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
                             Text(
@@ -376,7 +447,6 @@ class _DashboardViewState extends State<_DashboardView>
                     ],
                   ),
                   const SizedBox(height: 24),
-                  // Controles de Reproducción
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
@@ -394,7 +464,7 @@ class _DashboardViewState extends State<_DashboardView>
                           color: Colors.white,
                           size: 42,
                         ),
-                        onPressed: () => _playbackController.reset(),
+                        onPressed: () => _audioPlayer.seek(Duration.zero),
                       ),
                       GestureDetector(
                         onTap: _togglePlayback,
@@ -426,7 +496,7 @@ class _DashboardViewState extends State<_DashboardView>
                           color: Colors.white,
                           size: 42,
                         ),
-                        onPressed: () => _playbackController.forward(from: 1.0),
+                        onPressed: () {},
                       ),
                       IconButton(
                         icon: const Icon(
@@ -438,23 +508,8 @@ class _DashboardViewState extends State<_DashboardView>
                       ),
                     ],
                   ),
-                ] else ...[
-                  // Mensaje si no hay nada seleccionado
-                  const Center(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 40),
-                      child: Text(
-                        'Carga una partitura desde tus últimas transcripciones',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white54),
-                      ),
-                    ),
-                  ),
                 ],
-
                 const SizedBox(height: 48),
-
-                // Sección de Últimas Partituras
                 Text(
                   'Tus Últimas Partituras',
                   style: GoogleFonts.inter(
@@ -464,14 +519,14 @@ class _DashboardViewState extends State<_DashboardView>
                   ),
                 ),
                 const SizedBox(height: 16),
-
                 BlocBuilder<ScoreLibraryBloc, ScoreLibraryState>(
                   builder: (context, state) {
                     if (state is ScoreLibraryLoaded) {
-                      final recentScores = state.scores.take(3).toList();
+                      final recentScores = state.scores.take(5).toList();
                       if (recentScores.isEmpty) {
                         return const Text(
-                          'Aún no tienes partituras. ¡Ve a Transcribir!',
+                          'Aún no tienes partituras.',
+                          style: TextStyle(color: Colors.white54),
                         );
                       }
                       return Column(
@@ -479,38 +534,9 @@ class _DashboardViewState extends State<_DashboardView>
                             .map((score) => _buildScoreItem(score))
                             .toList(),
                       );
-                    } else if (state is ScoreLibraryLoading) {
-                      return const Center(child: CircularProgressIndicator());
-                    } else {
-                      return const Text(
-                        'No se encontraron partituras recientes.',
-                      );
                     }
+                    return const Center(child: CircularProgressIndicator());
                   },
-                ),
-                const SizedBox(height: 48),
-                Center(
-                  child: Column(
-                    children: [
-                      Text(
-                        'Yanita Music',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          color: Colors.white24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Text(
-                        'Versión ${VersionConstants.fullVersion}',
-                        style: TextStyle(color: Colors.white24, fontSize: 10),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        '© 2026 Yanita Music Team',
-                        style: TextStyle(color: Colors.white10, fontSize: 8),
-                      ),
-                    ],
-                  ),
                 ),
                 const SizedBox(height: 40),
               ],
@@ -550,9 +576,6 @@ class _DashboardViewState extends State<_DashboardView>
           'Piano - Transcripción Automática',
           style: TextStyle(color: Colors.white54, fontSize: 12),
         ),
-        trailing: isSelected && _isPlaying
-            ? const Icon(Icons.graphic_eq, color: Color(0xFFFF9800))
-            : const Icon(Icons.chevron_right, color: Colors.white24),
         onTap: () => _loadScore(score),
       ),
     );

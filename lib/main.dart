@@ -8,9 +8,13 @@ import 'package:yanita_music/presentation/blocs/songbook/songbook_bloc.dart';
 
 import 'package:yanita_music/presentation/pages/splash_screen.dart';
 import 'package:yanita_music/presentation/theme/app_theme.dart';
+import 'package:yanita_music/core/constants/version_constants.dart';
+import 'package:yanita_music/core/utils/logger.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  AppLogger.info('🚀 Iniciando Yanita Music v${VersionConstants.fullVersion}', tag: 'Main');
 
   // [OFFLINE OPTIMIZATION]: Desactivar descarga de fuentes en tiempo de ejecución
   GoogleFonts.config.allowRuntimeFetching = false;

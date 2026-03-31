@@ -253,12 +253,12 @@ class MusicXmlGenerator {
   }
 
   String _durationToType(int durationDivisions) {
-    final ratio = durationDivisions / divisions;
-    if (ratio >= 4.0) return 'whole';
-    if (ratio >= 2.0) return 'half';
-    if (ratio >= 1.0) return 'quarter';
-    if (ratio >= 0.5) return 'eighth';
-    if (ratio >= 0.25) return '16th';
+    final ratio = durationDivisions.toDouble() / divisions;
+    if (ratio >= 3.5) return 'whole';
+    if (ratio >= 1.75) return 'half';
+    if (ratio >= 0.85) return 'quarter';
+    if (ratio >= 0.45) return 'eighth';
+    if (ratio >= 0.2) return '16th';
     return '32nd';
   }
 }

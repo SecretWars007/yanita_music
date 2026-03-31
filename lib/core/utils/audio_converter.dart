@@ -32,36 +32,36 @@ class AudioConverter {
     // -ar 16000: Sample rate 16kHz
     // -ac 1: Mono
     // -y: Sobrescribir si existe
-    final String command = '-i "$inputPath" -ar 16000 -ac 1 -y "$outputPath"';
+    // -map_metadata -1 -fflags +bitexact: Eliminar todo metadato/id3 para asegurar header WAV de 44 bytes exactos
+    final String command = '-i "$inputPath" -ar 16000 -ac 1 -map_metadata -1 -fflags +bitexact -y "$outputPath"';
 
+    final inputFile = File(inputPath);
+    final inputSize = inputFile.existsSync() ? inputFile.lengthSync() : 0;
+    
+    AppLogger.debug('Archivo de entrada: $inputPath ($inputSize bytes)');
     AppLogger.debug('Ejecutando FFmpeg: ffmpeg $command');
     
     final session = await FFmpegKit.execute(command);
     final returnCode = await session.getReturnCode();
 
     if (ReturnCode.isSuccess(returnCode)) {
-      AppLogger.info('Conversión exitosa: $outputPath');
-      
-      // Copia de validación a assets/wavs
-      try {
-        final destDir = Directory('assets/wavs');
-        if (!destDir.existsSync()) {
-          destDir.createSync(recursive: true);
-        }
-        File(outputPath).copySync('assets/wavs/$outputName');
-        AppLogger.info('Copia de validación guardada en assets/wavs/$outputName');
-      } catch (e) {
-        AppLogger.warning('No se pudo guardar la copia de validación en assets/wavs: $e');
+      final file = File(outputPath);
+      final size = file.existsSync() ? file.lengthSync() : 0;
+      if (!file.existsSync() || size < 1000) {
+        final logs = await session.getAllLogsAsString();
+        AppLogger.error('FFmpeg terminó con éxito pero el archivo resultante es inválido o sospechosamente pequeño ($size bytes). Logs:\n$logs');
+        throw AudioProcessingException(message: 'El audio convertido es demasiado pequeño ($size bytes).');
       }
-
+      AppLogger.info('Conversión WAV exitosa. Tamaño: $size bytes. Ruta: $outputPath');
       return outputPath;
     } else if (ReturnCode.isCancel(returnCode)) {
       AppLogger.warning('Conversión FFmpeg cancelada por el usuario');
       throw const AudioProcessingException(message: 'Conversión cancelada');
     } else {
       final logs = await session.getAllLogsAsString();
-      AppLogger.error('Error en FFmpeg: $logs');
-      throw AudioProcessingException(message: 'Error al convertir audio a WAV: $returnCode');
+      final failReturnCode = await session.getReturnCode();
+      AppLogger.error('Error crítico en FFmpeg (Code $failReturnCode). Logs:\n$logs');
+      throw AudioProcessingException(message: 'Error al convertir audio a WAV: $failReturnCode');
     }
 
   }

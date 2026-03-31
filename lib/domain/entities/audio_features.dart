@@ -24,6 +24,9 @@ class AudioFeatures extends Equatable {
   /// Checksum del archivo fuente para trazabilidad.
   final String sourceChecksum;
 
+  /// Ruta al archivo WAV generado durante el procesamiento (opcional).
+  final String? wavPath;
+
   const AudioFeatures({
     required this.melSpectrogram,
     required this.numFrames,
@@ -31,6 +34,7 @@ class AudioFeatures extends Equatable {
     required this.audioDuration,
     required this.sampleRate,
     required this.sourceChecksum,
+    this.wavPath,
   });
 
   AudioFeatures copyWith({
@@ -40,6 +44,7 @@ class AudioFeatures extends Equatable {
     double? audioDuration,
     int? sampleRate,
     String? sourceChecksum,
+    String? wavPath,
   }) {
     return AudioFeatures(
       melSpectrogram: melSpectrogram ?? this.melSpectrogram,
@@ -48,8 +53,10 @@ class AudioFeatures extends Equatable {
       audioDuration: audioDuration ?? this.audioDuration,
       sampleRate: sampleRate ?? this.sampleRate,
       sourceChecksum: sourceChecksum ?? this.sourceChecksum,
+      wavPath: wavPath ?? this.wavPath,
     );
   }
+
 
   @override
   List<Object?> get props => [

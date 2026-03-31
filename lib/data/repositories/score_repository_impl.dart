@@ -1,4 +1,7 @@
+import 'dart:io';
 import 'package:dartz/dartz.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:yanita_music/core/error/exceptions.dart';
 import 'package:yanita_music/core/error/failures.dart';
 import 'package:yanita_music/core/utils/midi_utils.dart';
@@ -93,10 +96,24 @@ class ScoreRepositoryImpl implements ScoreRepository {
   Future<Either<Failure, String>> exportMusicXml(String scoreId) async {
     try {
       final score = await _localDataSource.getScoreById(scoreId);
-      final xmlPath = _musicXmlGenerator.generate(
+      
+      // [v53-FIX]: Generar ruta de archivo real en lugar de devolver el XML crudo
+      final directory = await getApplicationDocumentsDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final filePath = p.join(directory.path, 'exports', 'score_$timestamp.mxl');
+      
+      // Asegurar que el directorio existe
+      final exportDir = Directory(p.dirname(filePath));
+      if (!exportDir.existsSync()) {
+        exportDir.createSync(recursive: true);
+      }
+
+      final xmlPath = await _musicXmlGenerator.generateAndSave(
         notes: score.noteEvents,
         title: score.title,
+        outputPath: filePath,
       );
+      
       return Right(xmlPath);
     } on DatabaseException catch (e) {
       return Left(DatabaseFailure(message: e.message));

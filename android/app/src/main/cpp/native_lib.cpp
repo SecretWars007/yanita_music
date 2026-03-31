@@ -1,19 +1,49 @@
-#include "audio_utils.hpp"
-
-#define MINIMP3_IMPLEMENTATION
-#include "minimp3.h"
-#include "minimp3_ex.h"
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 
 #include <string>
 #include <vector>
 #include <chrono>
 #include <cstring>
-#include <android/log.h>
+#include <cmath>
+#include <algorithm>
+#include <cstdio>
 
+#include "audio_utils.hpp"
+
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3.h"
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4267)
+#include "minimp3_ex.h"
+#pragma warning(pop)
+#else
+#include "minimp3_ex.h"
+#endif
+
+#if defined(_WIN32) || !defined(__ANDROID__)
+#define LOGI(...) printf("[INFO] " __VA_ARGS__); printf("\n")
+#define LOGE(...) fprintf(stderr, "[ERROR] " __VA_ARGS__); fprintf(stderr, "\n")
+#define LOGD(...) printf("[DEBUG] " __VA_ARGS__); printf("\n")
+#else
+#include <android/log.h>
 #define LOG_TAG "YanitaNative"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#endif
+
+#ifdef _WIN32
+#define FFI_EXPORT __declspec(dllexport)
+#else
+#define FFI_EXPORT __attribute__((visibility("default")))
+#endif
 
 static std::string g_last_error = "";
 
@@ -23,14 +53,16 @@ extern "C" {
  * Procesa un archivo de audio y genera su espectrograma Mel.
  * Exportado con visibilidad por defecto para FFI.
  */
-__attribute__((visibility("default"))) 
+FFI_EXPORT 
 float* process_audio_file(const char* file_path, int32_t* out_frames,
-                          int32_t* out_mel_bins, double* out_duration) {
+                          int32_t* out_mel_bins, double* out_duration,
+                          float* out_piano_confidence) {
     auto start_total = std::chrono::high_resolution_clock::now();
     LOGI(">>> INICIO FFI: %s", file_path ? file_path : "NULL");
 
     if (file_path == nullptr || out_frames == nullptr ||
-        out_mel_bins == nullptr || out_duration == nullptr) {
+        out_mel_bins == nullptr || out_duration == nullptr || 
+        out_piano_confidence == nullptr) {
         g_last_error = "Punteros invalidos proporcionados al modulo nativo.";
         LOGE("Error: %s", g_last_error.c_str());
         return nullptr;
@@ -84,7 +116,8 @@ float* process_audio_file(const char* file_path, int32_t* out_frames,
 
     int audio_len = (int)audio.size();
     if (audio_len < FFT_SIZE) {
-        g_last_error = "Audio demasiado corto.";
+        g_last_error = "Audio demasiado corto: " + std::to_string(audio_len) + " samples (min " + std::to_string(FFT_SIZE) + ")";
+        LOGE("Error: %s", g_last_error.c_str());
         return nullptr;
     }
 
@@ -107,10 +140,14 @@ float* process_audio_file(const char* file_path, int32_t* out_frames,
     int spec_size = FFT_SIZE / 2 + 1;
     std::vector<float> power_spec(spec_size, 0.0f);
 
+    double total_flatness = 0.0;
     auto start_dsp = std::chrono::high_resolution_clock::now();
     for (int frame = 0; frame < num_frames; frame++) {
         int start = frame * HOP_SIZE;
         yanita::compute_power_spectrum(audio.data(), start, FFT_SIZE, window, audio_len, real_part, imag_part, power_spec);
+
+        // Calcular flatness para este frame
+        total_flatness += yanita::calculate_spectral_flatness(power_spec.data(), spec_size);
 
         for (int m = 0; m < NUM_MEL_BINS; m++) {
             float energy = 0.0f;
@@ -122,17 +159,23 @@ float* process_audio_file(const char* file_path, int32_t* out_frames,
         }
     }
 
-    // Normalización
-    float g_min = output[0], g_max = output[0];
-    for (size_t i = 1; i < total_elements; i++) {
-        if (output[i] < g_min) g_min = output[i];
-        if (output[i] > g_max) g_max = output[i];
-    }
-    float range = g_max - g_min;
-    if (range > 1e-7f) {
-        for (size_t i = 0; i < total_elements; i++) {
-            output[i] = (output[i] - g_min) / range;
-        }
+    // Calcular confianza final (1.0 - promedio de flatness)
+    // El piano es tonal (flatness bajo), por lo que 1 - flatness es alta confianza.
+    float avg_flatness = (float)(total_flatness / num_frames);
+    *out_piano_confidence = std::max(0.0f, 1.0f - (avg_flatness * 2.0f)); 
+    // Multiplicamos por 2 para ser más estrictos con el ruido.
+
+    // En lugar de normalización relativa [0, 1] que desalinea pesos, 
+    // usamos una escala fija basada en el piso logarítmico (1e-10f -> -23.0).
+    // Esto asegura que piezas suaves o ruidosas se vean igual ante el modelo.
+    for (size_t i = 0; i < total_elements; i++) {
+        // Mapeamos de aprox [-23, 0] a [0, 1] aproximadamente o simplemente
+        // mantenemos los valores crudos centrados si el entrenamiento no escaló.
+        // [v53-FIX]: Normalización estática (clipping en dB razonable)
+        float val = output[i];
+        if (val < -10.0f) val = -10.0f; // Noise floor
+        if (val > 2.0f) val = 2.0f;     // Peak
+        output[i] = (val + 10.0f) / 12.0f; // Scale to [0, 1] estático
     }
 
     auto end_total = std::chrono::high_resolution_clock::now();
@@ -146,14 +189,14 @@ float* process_audio_file(const char* file_path, int32_t* out_frames,
     return output;
 }
 
-__attribute__((visibility("default")))
+FFI_EXPORT
 void free_buffer(float* buffer) {
     if (buffer != nullptr) {
         free(buffer);
     }
 }
 
-__attribute__((visibility("default")))
+FFI_EXPORT
 const char* get_last_error() {
     return g_last_error.c_str();
 }

@@ -5,10 +5,12 @@
 class AppConstants {
   AppConstants._();
 
-  static const String appName = 'PianoScribe';
-  static const String appVersion = '1.0.0';
+  static const String appName = 'YanitaMusic';
+  static const String appVersion = '1.2.0';
+  static const String buildNumber = '53';
   static const String dbName = 'yanitadb.db';
-  static const int dbVersion = 4;
+  static const int dbVersion = 17;
+
 
   // Modelo TFLite
   static const String tfliteModelPath =
@@ -46,5 +48,6 @@ class AppConstants {
   static const double onsetToleranceMs = 50.0;
 
   // Optimización de procesamiento
-  static const int maxParallelIsolates = 2; // Límite para evitar OOM (Salida de memoria)
+  static const int maxParallelIsolates =
+      2; // Límite para evitar OOM (Salida de memoria)
 }

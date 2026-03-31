@@ -1,12 +1,18 @@
 #include "audio_utils.hpp"
 #include <cmath>
 #include <algorithm>
+#if defined(_WIN32) || !defined(__ANDROID__)
+#include <cstdio>
+#define LOGD(...) printf("[DEBUG] " __VA_ARGS__); printf("\n")
+#define LOGE(...) fprintf(stderr, "[ERROR] " __VA_ARGS__); fprintf(stderr, "\n")
+#define LOGI(...) printf("[INFO] " __VA_ARGS__); printf("\n")
+#else
 #include <android/log.h>
-
 #define LOG_TAG "YanitaDSP"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#endif
 
 namespace yanita {
 
@@ -161,6 +167,35 @@ void compute_power_spectrum(
     for (int i = 0; i < spec_size; i++) {
         power_spec[i] = (real_part[i] * real_part[i]) + (imag_part[i] * imag_part[i]);
     }
+}
+
+float calculate_spectral_flatness(const float* power_spec, int spec_size) {
+    if (spec_size <= 0) return 0.0f;
+    
+    double geometric_mean_sum = 0.0;
+    double arithmetic_mean_sum = 0.0;
+    int count = 0;
+
+    // Ignorar bins DC y muy bajos/altos para estabilidad
+    for (int i = 5; i < spec_size - 10; i++) {
+        float val = power_spec[i];
+        if (val < 1e-10f) val = 1e-10f;
+        
+        geometric_mean_sum += std::log(val);
+        arithmetic_mean_sum += val;
+        count++;
+    }
+
+    if (count == 0) return 1.0f; // Ruido/Silencio
+
+    double g_mean = std::exp(geometric_mean_sum / count);
+    double a_mean = arithmetic_mean_sum / count;
+
+    if (a_mean < 1e-12) return 1.0f; // Silencio
+    
+    // Flatness = Geometric Mean / Arithmetic Mean
+    // 1.0 = Ruido blanco (plano), subiendo a 0.0 = Tonal/Pico (Piano)
+    return (float)(g_mean / a_mean);
 }
 
 } // namespace yanita
